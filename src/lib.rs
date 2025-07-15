@@ -1,5 +1,7 @@
 use futures::StreamExt;
 use once_cell::sync::OnceCell;
+use tokio::time::sleep;
+
 use tauri::{
     async_runtime,
     plugin::{Builder, TauriPlugin},
@@ -23,15 +25,16 @@ static HANDLER: OnceCell<Handler> = OnceCell::new();
 /// # Panics
 /// Panics if the handler cannot be initialized.
 pub fn init() -> TauriPlugin<Wry> {
-    let handler = async_runtime::block_on(Handler::new()).expect("failed to initialize handler");
-    let _ = HANDLER.set(handler);
-
     #[allow(unused)]
     Builder::new("blec")
         .invoke_handler(commands::commands())
         .setup(|app, api| {
             #[cfg(target_os = "android")]
             android::init(app, api)?;
+            async_runtime::spawn(async {
+                let handler = Handler::new().await.expect("failed to initialize handler");
+                let _ = HANDLER.set(handler);
+            });
             async_runtime::spawn(handle_events());
             Ok(())
         })
@@ -57,17 +60,23 @@ pub fn check_permissions() -> Result<bool, Error> {
 }
 
 async fn handle_events() {
-    let handler = get_handler().expect("failed to get handler");
-    let stream = handler
-        .get_event_stream()
-        .await
-        .expect("failed to get event stream");
-    stream
-        .for_each(|event| async {
-            handler
-                .handle_event(event)
+    loop {
+        if let Ok(handler) = get_handler() {
+            let stream = handler
+                .get_event_stream()
                 .await
-                .expect("failed to handle event");
-        })
-        .await;
+                .expect("failed to get event stream");
+            stream
+                .for_each(|event| async {
+                    handler
+                        .handle_event(event)
+                        .await
+                        .expect("failed to handle event");
+                })
+                .await;
+            break;
+        } else {
+            sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
 }
